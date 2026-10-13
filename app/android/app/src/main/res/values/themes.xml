@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.ClipStudio" parent="android:Theme.Material.NoActionBar" />
+</resources>

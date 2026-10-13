@@ -1,0 +1,12 @@
+# Material de terceiros (OpusClip): só referência local, nunca publicar.
+*.apk
+analise_opusclip/
+RELATORIO_OPUSCLIP.md
+ProjectApi.txt
+UploadMetodo.txt
+
+# Segredos e ambiente local
+.env
+.claude/
+.venv*/
+app/android/emulator.pid
