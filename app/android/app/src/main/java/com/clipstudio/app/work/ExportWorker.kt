@@ -61,6 +61,12 @@ class ExportWorker(context: Context, params: WorkerParameters) : CoroutineWorker
             if (!clip.exportReady) clip = api.render(clipId, "export")
             val deadline = System.currentTimeMillis() + RENDER_TIMEOUT_MS
             while (!clip.exportReady) {
+                // O servidor desliga render_pending quando o render terminou. Sem export pronto nesse
+                // momento, o render falhou de vez (ou o corte foi editado): esperar até o timeout não adianta.
+                if (!clip.renderPending) {
+                    return Result.failure(workDataOf(KEY_ERROR to
+                        "O servidor não conseguiu renderizar o corte. Tente exportar de novo."))
+                }
                 if (System.currentTimeMillis() > deadline) return Result.retry()
                 delay(3_000)
                 clip = api.clip(clipId)

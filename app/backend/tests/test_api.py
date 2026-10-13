@@ -154,3 +154,24 @@ def test_expired_lease_is_reclaimed(env):
         s.commit()
     again = claim("w2")
     assert again.id == job.id and again.worker == "w2" and again.attempts == 2
+
+
+def test_job_abandoned_after_max_attempts(env):
+    """Worker morto (ex.: OOM-kill) em todas as tentativas: o job falha em vez de voltar à fila para sempre."""
+    from app.api.jobs import MAX_ATTEMPTS, claim, enqueue
+
+    client, _ = env
+    r = client.post("/projects", json={"filename": "x.mp4", "size": 10})
+    pid = r.json()["project"]["id"]
+    job = enqueue(pid, "process")
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        claimed = claim(f"w{attempt}")
+        assert claimed.id == job.id and claimed.attempts == attempt
+        with db.session() as s:
+            s.get(db.Job, job.id).lease_until = db.utcnow() - timedelta(seconds=1)  # o worker "morreu"
+            s.commit()
+    assert claim("w-final") is None
+    with db.session() as s:
+        assert s.get(db.Job, job.id).status == "failed"
+    p = client.get(f"/projects/{pid}").json()
+    assert p["status"] == "FAILED" and "worker parou" in p["error"]

@@ -43,7 +43,8 @@ def process(
         min_duration=min_duration, max_duration=max_duration, max_clips=max_clips,
         prompt=prompt, keywords=keyword, language=language,
     )
-    spec = EditSpec(start=0, end=0, aspect=aspect, reframe=reframe, captions=CaptionStyle(enabled=captions))
+    spec = EditSpec(start=0, end=0, aspect=aspect, reframe=reframe, reframe_auto=reframe == Reframe.AUTO,
+                    captions=CaptionStyle(enabled=captions))
     try:
         result = process_video(
             video, out, prefs, spec, detect_faces=faces, reuse=reuse, on_stage=_progress,
@@ -86,8 +87,13 @@ def render_cmd(
     source = Path(result.source)
     info = probe(source)
     if updates.keys() & {"start", "end", "aspect", "reframe"}:
-        clip.spec = plan_reframe(load_signals(out / "signals.json"), info,
-                                 clip.spec if reframe else clip.spec.model_copy(update={"reframe": Reframe.AUTO}))
+        if reframe:
+            base = clip.spec.model_copy(update={"reframe_auto": reframe == Reframe.AUTO})
+        elif clip.spec.reframe_auto:  # modo automático: decide de novo; escolha explícita fica
+            base = clip.spec.model_copy(update={"reframe": Reframe.AUTO})
+        else:
+            base = clip.spec
+        clip.spec = plan_reframe(load_signals(out / "signals.json"), info, base)
 
     render_and_check(source, info, load_transcript(out), clip, out, quality,
                      lambda p: _progress(Stage.RENDER, p, f"corte {rank}"))

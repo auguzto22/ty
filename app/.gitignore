@@ -2,7 +2,9 @@
 __pycache__/
 *.egg-info/
 .env
-data/
+# Ancorados no backend: um "data/" solto também ignoraria o pacote Kotlin com.clipstudio.app.data do Android.
+/data/
+/backend/data/
 out/
 .pytest_cache/
 data_test/

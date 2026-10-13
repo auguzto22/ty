@@ -394,7 +394,9 @@ def edit_clip(who: Who, clip_id: str, body: ClipEdit) -> dict:
             source = next(iter(sorted(project_dir(c.project_id).glob("source.*"))), None)
             if source is None:
                 raise HTTPException(409, "vídeo de origem ausente")
-            if body.reframe is None:
+            if body.reframe is not None:
+                spec = spec.model_copy(update={"reframe_auto": body.reframe == Reframe.AUTO})
+            elif spec.reframe_auto:  # modo automático: decide de novo para o novo trecho; escolha do usuário fica
                 spec = spec.model_copy(update={"reframe": Reframe.AUTO})
             spec = plan_reframe(load_signals(work / "signals.json"), probe(source), spec)
         c.edit_spec = spec.model_dump(mode="json")
