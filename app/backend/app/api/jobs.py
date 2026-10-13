@@ -36,18 +36,35 @@ def enqueue(project_id: str, kind: str, clip_id: str | None = None, payload: dic
         return job
 
 
+def _fail_abandoned(now) -> None:
+    """Job "running" com lease vencido já tentado MAX_ATTEMPTS vezes: o worker morreu em todas (ex.: OOM-kill
+    no whisper). Sem isto ele voltaria à fila para sempre, porque o processo morto nunca chega ao `except`."""
+    expired = (Job.status == "running") & (Job.lease_until < now) & (Job.attempts >= MAX_ATTEMPTS)
+    with session() as s:
+        dead = s.scalars(select(Job).where(expired)).all()
+    error = f"o worker parou {MAX_ATTEMPTS} vezes durante este job (falta de memória?)"
+    for job in dead:
+        with session() as s:
+            res = s.execute(update(Job).where(Job.id == job.id, expired)
+                            .values(status="failed", error=error, lease_until=None))
+            s.commit()
+        if res.rowcount == 1:
+            log.error("job %s (%s) abandonado após %d tentativas", job.id, job.kind, job.attempts)
+            _after_final_failure(job, error)
+
+
 def claim(worker: str) -> Job | None:
     """Pega o job elegível mais antigo de forma atômica (UPDATE condicional)."""
     now = utcnow()
+    _fail_abandoned(now)
+    eligible = or_(Job.status == "queued",
+                   (Job.status == "running") & (Job.lease_until < now) & (Job.attempts < MAX_ATTEMPTS))
     with session() as s:
-        candidates = s.scalars(
-            select(Job.id).where(or_(Job.status == "queued", (Job.status == "running") & (Job.lease_until < now)))
-            .order_by(Job.created_at).limit(5)
-        ).all()
+        candidates = s.scalars(select(Job.id).where(eligible).order_by(Job.created_at).limit(5)).all()
         for job_id in candidates:
             res = s.execute(
                 update(Job)
-                .where(Job.id == job_id, or_(Job.status == "queued", (Job.status == "running") & (Job.lease_until < now)))
+                .where(Job.id == job_id, eligible)
                 .values(status="running", lease_until=now + LEASE, worker=worker, attempts=Job.attempts + 1)
             )
             s.commit()
@@ -115,7 +132,9 @@ def run_process(job: Job) -> None:
     render_data = prefs_data.pop("render", {})
     prefs_data.pop("use_llm", None)  # campo de projetos antigos; a IA agora é sempre usada
     prefs = CurationPrefs.model_validate(prefs_data)
-    base = EditSpec(start=0, end=0, aspect=render_data.get("aspect", "9:16"), reframe=render_data.get("reframe", "auto"),
+    reframe = render_data.get("reframe", "auto")
+    base = EditSpec(start=0, end=0, aspect=render_data.get("aspect", "9:16"), reframe=reframe,
+                    reframe_auto=reframe == "auto",
                     captions=CaptionStyle.model_validate(render_data.get("captions", {})))
     _set_project(job.project_id, status="PROCESSING", error="")
 
@@ -175,6 +194,18 @@ def run_render(job: Job) -> None:
 HANDLERS = {"process": run_process, "render": run_render}
 
 
+def _after_final_failure(job: Job, error: str) -> None:
+    """Reflete no projeto/corte um job que não será mais tentado."""
+    if job.kind == "process":
+        _set_project(job.project_id, status="FAILED", stage=Stage.FAILED.value, error=error)
+    elif job.kind == "render":
+        with session() as s:
+            clip = s.get(Clip, job.clip_id)
+            if clip:
+                clip.render_pending = False
+                s.commit()
+
+
 def execute(job: Job) -> None:
     """Executa um job já reivindicado e registra o resultado; erros reenfileiram até MAX_ATTEMPTS."""
     with Heartbeat(job.id):
@@ -183,18 +214,16 @@ def execute(job: Job) -> None:
         except Exception as e:  # o worker não pode morrer por causa de um vídeo
             log.exception("job %s (%s) falhou", job.id, job.kind)
             final = job.attempts >= MAX_ATTEMPTS or isinstance(e, (ValueError, FileNotFoundError))
+            error = str(e)[:2000]
             with session() as s:
                 s.execute(update(Job).where(Job.id == job.id).values(
-                    status="failed" if final else "queued", error=str(e)[:2000], lease_until=None))
+                    status="failed" if final else "queued", error=error, lease_until=None))
                 s.commit()
-            if job.kind == "process" and final:
-                _set_project(job.project_id, status="FAILED", stage=Stage.FAILED.value, error=str(e)[:2000])
-            elif job.kind == "render" and final:
-                with session() as s:
-                    clip = s.get(Clip, job.clip_id)
-                    if clip:
-                        clip.render_pending = False
-                        s.commit()
+            if final:
+                _after_final_failure(job, error)
+            elif job.kind == "process":  # volta à fila: o app não deve continuar vendo "processando"
+                _set_project(job.project_id, status="QUEUED", stage=Stage.QUEUED.value,
+                             message=f"Na fila (tentativa {job.attempts + 1} de {MAX_ATTEMPTS})")
             return
     with session() as s:
         s.execute(update(Job).where(Job.id == job.id).values(status="done", lease_until=None, error=""))

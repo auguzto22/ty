@@ -127,6 +127,9 @@ class EditSpec(BaseModel):
     end: float
     aspect: AspectRatio = AspectRatio.VERTICAL
     reframe: Reframe = Reframe.AUTO
+    # True = o modo foi decidido automaticamente (AUTO) e é decidido de novo a cada trim;
+    # False = o usuário escolheu FACE/FIT/CENTER e a escolha é mantida.
+    reframe_auto: bool = True
     track: list[TrackPoint] = Field(default_factory=list)
     captions: CaptionStyle = Field(default_factory=CaptionStyle)
     word_overrides: dict[int, str] = Field(default_factory=dict)  # índice global da palavra -> texto editado
